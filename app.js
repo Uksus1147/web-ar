@@ -20,6 +20,22 @@ function init(){
   document.body.appendChild(renderer.domElement);
 
   document.body.appendChild( ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }) );
+let hitTestSource = null;
+let localSpace = null;
+
+renderer.xr.addEventListener("sessionstart", async () => {
+  const session = renderer.xr.getSession();
+
+  const viewerSpace = await session.requestReferenceSpace("viewer");
+  hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+  localSpace = await session.requestReferenceSpace("local");
+
+  session.addEventListener("end", () => {
+    hitTestSource = null;
+    localSpace = null;
+  });
+});
 
   // light
   const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
@@ -77,8 +93,8 @@ function animate(){
   renderer.setAnimationLoop(render);
 }
 
-function render(time){
-  // simple FPS calc
+function render(time, frame){
+  // FPS
   frames++;
   if(time - lastTime >= 1000){
     const fps = Math.round((frames*1000)/(time-lastTime));
@@ -86,8 +102,32 @@ function render(time){
     if(measuring) samples.push({t:Date.now(), fps});
     frames = 0; lastTime = time;
   }
+
+  // HIT TEST (ЭТО И ЕСТЬ AR!)
+  if(frame && hitTestSource){
+    const hitTestResults = frame.getHitTestResults(hitTestSource);
+    if(hitTestResults.length > 0){
+      const hit = hitTestResults[0];
+      const pose = hit.getPose(localSpace);
+
+      reticle.visible = true;
+      reticle.matrix.fromArray(pose.transform.matrix);
+
+      // ставим модель, если она ещё не поставлена
+      controller.addEventListener("select", () => {
+        if(model){
+          model.position.setFromMatrixPosition(reticle.matrix);
+        }
+      });
+
+    } else {
+      reticle.visible = false;
+    }
+  }
+
   renderer.render(scene, camera);
 }
+
 
 function exportCSV(){
   if(samples.length===0){ alert('No samples'); return; }
