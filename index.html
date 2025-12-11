@@ -1,105 +1,215 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <title>WebAR FPS Test 2025</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <style>
-    body { margin:0; overflow:hidden; }
-    #overlay {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      pointer-events: none; z-index: 10; padding: 20px; box-sizing: border-box;
-      font-family: Arial, sans-serif; color: white;
-    }
-    button, select { pointer-events: auto; padding: 15px; font-size: 18px; margin: 10px 0; width: 100%; }
-    #info { background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px; margin-top: 20px; }
-  </style>
+    <title>WebAR FPS Test - Рабочая версия 2025</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+        body { margin: 0; font-family: Arial; }
+        canvas { display: block; }
+        #ui {
+            position: absolute; top: 10px; left: 10px; z-index: 100; color: white;
+            background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px; max-width: 300px;
+        }
+        button, select { width: 100%; padding: 10px; margin: 5px 0; font-size: 16px; }
+        #info { margin-top: 10px; font-size: 18px; }
+        #instructions { font-size: 14px; margin-top: 10px; }
+    </style>
 </head>
 <body>
+    <div id="ui">
+        <button id="startAR">START AR (нажми для запуска камеры)</button>
+        <select id="modelSelect">
+            <option value="low">Low-poly (низкая детализация)</option>
+            <option value="mid">Mid-poly (средняя)</option>
+            <option value="high">High-poly (высокая)</option>
+        </select>
+        <div id="info">FPS: —<br>Полигонов: —</div>
+        <div id="instructions">Тапни по экрану, чтобы разместить модель</div>
+    </div>
 
-<div id="overlay">
-  <button id="start">ЗАПУСТИТЬ WEBAR</button>
-  <select id="modelSelect">
-    <option value="low">Low-poly</option>
-    <option value="mid">Mid-poly</option>
-    <option value="high">High-poly</option>
-  </select>
-  <div id="info">FPS: —<br>Полигонов: —</div>
-</div>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.168.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.168.0/examples/jsm/"
+            }
+        }
+    </script>
 
-<script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js';
-import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/webxr/ARButton.js';
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/GLTFLoader.js';
+    <script type="module">
+        import * as THREE from 'three';
+        import { ARButton } from 'three/addons/webxr/ARButton.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-let renderer, scene, camera, model;
-let currentModel = 'low';
-let controller;
+        let container;
+        let camera, scene, renderer;
+        let model = null;
+        let currentModelName = 'low';
+        let reticle;
+        let hitTestSource = null;
+        let hitTestSourceRequested = false;
+        let controller;
 
-const info = document.getElementById('info');
-const startButton = document.getElementById('start');
+        const modelPolyCount = { low: 0, mid: 0, high: 0 };
+        const info = document.getElementById('info');
 
-document.getElementById('modelSelect').addEventListener('change', e => {
-  currentModel = e.target.value;
-  loadModel();
-});
+        init();
+        animate();
 
-startButton.addEventListener('click', () => {
-  startButton.style.display = 'none';
-  initAR();
-});
+        function init() {
+            container = document.body;
 
-function initAR() {
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+            scene = new THREE.Scene();
 
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.xr.enabled = true;
-  document.body.appendChild(renderer.domElement);
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-  // ← ЭТО САМАЯ ВАЖНАЯ СТРОКА 2025 ГОДА
-  const button = ARButton.createButton(renderer, {
-    requiredFeatures: ['hit-test'],
-    optionalFeatures: ['dom-overlay', 'light-estimation'],
-    domOverlay: { root: document.getElementById('overlay') }
-  });
-  document.body.appendChild(button);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            container.appendChild(renderer.domElement);
 
-  const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.5);
-  scene.add(light);
+            // Свет
+            const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.5);
+            scene.add(light);
 
-  loadModel();
-  renderer.setAnimationLoop(render);
-}
+            // Reticle для hit-test (кружок для размещения)
+            reticle = new THREE.Mesh(
+                new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+                new THREE.MeshBasicMaterial()
+            );
+            reticle.matrixAutoUpdate = false;
+            reticle.visible = false;
+            scene.add(reticle);
 
-function loadModel() {
-  if (model) scene.remove(model);
-  new GLTFLoader().load(`models/${currentModel}.glb`, gltf => {
-    model = gltf.scene;
-    const box = new THREE.Box3().setFromObject(model);
-    const size = box.getSize(new THREE.Vector3()).length();
-    model.scale.setScalar(1.5 / size);
-    model.position.set(0, -0.5, -1.5);
-    scene.add(model);
+            // Контроллер для hit-test
+            controller = renderer.xr.getController(0);
+            controller.addEventListener('select', onSelect);
+            scene.add(controller);
 
-    let polys = 0;
-    model.traverse(obj => { if (obj.isMesh) polys += obj.geometry.index ? obj.geometry.index.count/3 : obj.geometry.attributes.position.count/3; });
-    info.innerHTML = `FPS: —<br>Полигонов: ${Math.round(polys)}`;
-  });
-}
+            // **РАБОЧАЯ КНОПКА AR 2025 (из официального примера Three.js)**
+            const arButton = ARButton.createButton(renderer, {
+                requiredFeatures: ['hit-test'],  // Обязательно для размещения
+                optionalFeatures: ['dom-overlay', 'dom-overlay-for-handheld-ar', 'light-estimation']  // Для UI и освещения на Android
+            });
+            document.getElementById('startAR').style.display = 'none';
+            container.appendChild(arButton);  // Кнопка добавляется автоматически
 
-let lastTime = 0;
-function render(time) {
-  if (!lastTime) lastTime = time;
-  const delta = (time - lastTime) / 1000;
-  lastTime = time;
-  const fps = delta > 0 ? Math.round(1 / delta) : 0;
-  info.innerHTML = info.innerHTML.replace(/FPS: \d+/, `FPS: ${fps}`);
+            // Смена модели
+            document.getElementById('modelSelect').addEventListener('change', (e) => {
+                currentModelName = e.target.value;
+                loadModel();
+            });
 
-  renderer.render(scene, camera);
-}
-</script>
+            loadModel();  // Загрузи по умолчанию
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function loadModel() {
+            if (model) scene.remove(model);
+
+            const loader = new GLTFLoader();
+            loader.load(`models/${currentModelName}.glb`, (gltf) => {
+                model = gltf.scene;
+
+                // Масштаб и позиция
+                const box = new THREE.Box3().setFromObject(model);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                model.position.sub(center);
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 0.5 / maxDim;  // Меньше масштаб для мобильных
+                model.scale.setScalar(scale);
+
+                // Подсчёт полигонов
+                let polyCount = 0;
+                model.traverse((child) => {
+                    if (child.isMesh) {
+                        const geo = child.geometry;
+                        if (geo.index) polyCount += geo.index.count / 3;
+                        else if (geo.attributes && geo.attributes.position) polyCount += geo.attributes.position.count / 3;
+                    }
+                });
+                modelPolyCount[currentModelName] = Math.round(polyCount);
+
+                updateInfo();
+            }, undefined, (error) => {
+                console.error('Ошибка загрузки модели:', error);
+                info.innerHTML = 'Ошибка: модель не загрузилась. Проверь путь.';
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Hit-test для размещения модели
+        function onSelect() {
+            if (reticle.visible && model) {
+                const clone = model.clone();
+                clone.position.setFromMatrixPosition(reticle.matrix);
+                clone.scale.setScalar(1);  // Полный размер при размещении
+                scene.add(clone);
+            }
+        }
+
+        function animate() {
+            renderer.setAnimationLoop(render);
+        }
+
+        let frameCount = 0;
+        let lastTime = performance.now();
+        function render() {
+            frameCount++;
+            const time = performance.now();
+            if (time - lastTime >= 1000) {  // FPS каждую секунду
+                const fps = Math.round(frameCount * 1000 / (time - lastTime));
+                frameCount = 0;
+                lastTime = time;
+                updateInfo(fps);
+            }
+
+            if (renderer.xr.isPresenting) {
+                // Hit-test логика (из официального примера)
+                const session = renderer.xr.getSession();
+                const frame = session.frame;
+                if (hitTestSourceRequested === false) {
+                    session.requestReferenceSpaceType('viewer').then(referenceSpace => {
+                        session.requestHitTestSource({ space: referenceSpace }).then(source => {
+                            hitTestSource = source;
+                        });
+                    });
+                    session.addEventListener('end', () => {
+                        hitTestSourceRequested = false;
+                        hitTestSource = null;
+                    });
+                    hitTestSourceRequested = true;
+                }
+
+                if (frame) {
+                    const referenceSpace = renderer.xr.getReferenceSpace();
+                    const hitTestResults = frame.getHitTestResults(hitTestSource);
+                    if (hitTestResults.length) {
+                        const hit = hitTestResults[0];
+                        const pose = hit.getPose(referenceSpace);
+                        reticle.visible = true;
+                        reticle.matrix.fromArray(pose.transform.matrix);
+                    } else {
+                        reticle.visible = false;
+                    }
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function updateInfo(fps = 0) {
+            info.innerHTML = `FPS: ${fps}<br>Полигонов: ${modelPolyCount[currentModelName] || '—'}`;
+        }
+    </script>
 </body>
 </html>
