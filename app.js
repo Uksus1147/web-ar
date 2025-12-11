@@ -35,7 +35,11 @@ function init() {
   document.body.appendChild(stats.dom);
 
   // Кнопка AR
-  const arButton = ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] });
+  const arButton = ARButton.createButton(renderer, {
+  requiredFeatures: ['hit-test'],
+  optionalFeatures: ['dom-overlay'],   // ← это обязательно добавить
+  domOverlay: { root: document.body }  Knot this is the key
+});
   document.getElementById('startAR').replaceWith(arButton);
 
   // Смена модели
