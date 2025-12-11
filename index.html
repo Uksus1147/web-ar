@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <title>WebAR FPS Test - Фикс чёрного экрана 2025</title>
+    <title>WebAR FPS Test - Фикс чёрного экрана Chrome 2025</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
     <style>
@@ -14,20 +14,21 @@
         button, select { width: 100%; padding: 10px; margin: 5px 0; font-size: 16px; }
         #info { margin-top: 10px; font-size: 18px; }
         #instructions { font-size: 14px; margin-top: 10px; }
-        #debug { font-size: 12px; color: yellow; margin-top: 5px; } /* Для отладки видео */
+        #debug { font-size: 12px; color: yellow; margin-top: 5px; }
     </style>
 </head>
 <body>
     <div id="ui">
         <button id="startAR">START AR (нажми для запуска камеры)</button>
+        <button id="fullscreenToggle" style="display:none;">Toggle Fullscreen (убрать чёрный экран)</button>
         <select id="modelSelect">
-            <option value="low">Low-poly (низкая детализация)</option>
-            <option value="mid">Mid-poly (средняя)</option>
-            <option value="high">High-poly (высокая)</option>
+            <option value="low">Low-poly</option>
+            <option value="mid">Mid-poly</option>
+            <option value="high">High-poly</option>
         </select>
         <div id="info">FPS: —<br>Полигонов: —</div>
         <div id="instructions">Тапни по экрану, чтобы разместить модель</div>
-        <div id="debug">Видео-feed: —</div> <!-- Debug для проверки камеры -->
+        <div id="debug">Видео-feed: —</div>
     </div>
 
     <script type="importmap">
@@ -52,10 +53,12 @@
         let hitTestSource = null;
         let hitTestSourceRequested = false;
         let controller;
+        let xrSession = null;
 
         const modelPolyCount = { low: 0, mid: 0, high: 0 };
         const info = document.getElementById('info');
         const debug = document.getElementById('debug');
+        const fullscreenToggle = document.getElementById('fullscreenToggle');
 
         init();
         animate();
@@ -67,18 +70,19 @@
 
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-            // **ФИКС 1: Убрали alpha: true — WebXR сам наложит видео-feed**
-            renderer = new THREE.WebGLRenderer({ antialias: true }); // Без alpha!
+            // **ФИКС 4: Вернули alpha: true + outputContext для видео-overlay + bufferScale 1.0**
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, outputContext: 'webxr' });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.xr.enabled = true;
+            renderer.xr.setReferenceSpaceType('local');  // Фикс для Android viewport
             container.appendChild(renderer.domElement);
 
             // Свет
             const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.5);
             scene.add(light);
 
-            // Reticle для hit-test
+            // Reticle
             reticle = new THREE.Mesh(
                 new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
                 new THREE.MeshBasicMaterial()
@@ -92,13 +96,27 @@
             controller.addEventListener('select', onSelect);
             scene.add(controller);
 
-            // **ФИКС 2: Добавили "camera-access" и "local" — для видео-feed на Android 2025**
+            // **ФИКС 5: Добавили sessionMode: 'immersive-ar' + domOverlay root**
             const arButton = ARButton.createButton(renderer, {
-                requiredFeatures: ['hit-test', 'camera-access', 'local'],  // camera-access для видео, local для мобильного AR
-                optionalFeatures: ['dom-overlay', 'dom-overlay-for-handheld-ar', 'light-estimation']
+                requiredFeatures: ['hit-test', 'camera-access', 'local'],
+                optionalFeatures: ['dom-overlay', 'dom-overlay-for-handheld-ar', 'light-estimation'],
+                sessionMode: 'immersive-ar'  // Принудительно immersive для видео-feed
             });
-            document.getElementById('startAR').style.display = 'none';
+            arButton.onclick = () => {  // Хук на запуск сессии
+                document.getElementById('startAR').style.display = 'none';
+                fullscreenToggle.style.display = 'block';
+            };
             container.appendChild(arButton);
+
+            // **ФИКС 6: Toggle Fullscreen для очистки чёрного экрана (Android navigation bug)**
+            fullscreenToggle.addEventListener('click', async () => {
+                if (document.fullscreenElement) {
+                    await document.exitFullscreen();
+                } else {
+                    await container.requestFullscreen({ navigationUI: 'hide' });  // Скрыть навигацию
+                }
+                if (xrSession) await xrSession.updateRenderState({ depthNear: 0.01, depthFar: 100 });
+            });
 
             // Смена модели
             document.getElementById('modelSelect').addEventListener('change', (e) => {
@@ -118,7 +136,6 @@
             loader.load(`models/${currentModelName}.glb`, (gltf) => {
                 model = gltf.scene;
 
-                // Масштаб и позиция
                 const box = new THREE.Box3().setFromObject(model);
                 const size = box.getSize(new THREE.Vector3());
                 const center = box.getCenter(new THREE.Vector3());
@@ -127,7 +144,6 @@
                 const scale = 0.5 / maxDim;
                 model.scale.setScalar(scale);
 
-                // Подсчёт полигонов
                 let polyCount = 0;
                 model.traverse((child) => {
                     if (child.isMesh) {
@@ -141,7 +157,7 @@
                 updateInfo();
             }, undefined, (error) => {
                 console.error('Ошибка загрузки модели:', error);
-                info.innerHTML = 'Ошибка: модель не загрузилась. Проверь путь.';
+                info.innerHTML = 'Ошибка: модель не загрузилась.';
             });
         }
 
@@ -151,7 +167,6 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        // Размещение модели
         function onSelect() {
             if (reticle.visible && model) {
                 const clone = model.clone();
@@ -177,24 +192,21 @@
                 updateInfo(fps);
             }
 
-            if (renderer.xr.isPresenting) {
-                // **ФИКС 3: Debug для видео-feed (проверим, видит ли сессия камеру)**
-                const session = renderer.xr.getSession();
-                if (session && session.inputSources.length > 0) {
-                    debug.innerHTML = 'Видео-feed: Активно (камера видит мир)';
-                } else {
-                    debug.innerHTML = 'Видео-feed: Нет доступа — включи флаги Chrome';
-                }
+            xrSession = renderer.xr.getSession();
+            if (xrSession && xrSession.isPresenting) {
+                // Debug видео-feed
+                const inputSources = xrSession.inputSources;
+                debug.innerHTML = inputSources.length > 0 ? 'Видео-feed: Активно (комната видна)' : 'Видео-feed: Нет — включи флаги или Samsung Internet';
 
                 // Hit-test
-                const frame = session.frame;
+                const frame = xrSession.frame;
                 if (hitTestSourceRequested === false) {
-                    session.requestReferenceSpaceType('viewer').then(referenceSpace => {
-                        session.requestHitTestSource({ space: referenceSpace }).then(source => {
+                    xrSession.requestReferenceSpaceType('viewer').then(referenceSpace => {
+                        xrSession.requestHitTestSource({ space: referenceSpace }).then(source => {
                             hitTestSource = source;
                         });
                     });
-                    session.addEventListener('end', () => {
+                    xrSession.addEventListener('end', () => {
                         hitTestSourceRequested = false;
                         hitTestSource = null;
                     });
