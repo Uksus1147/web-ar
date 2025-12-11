@@ -2,30 +2,104 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>Влияние детализации модели на FPS в WebAR</title>
+  <title>WebAR FPS Test 2025</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <style>
-    body { margin: 0; overflow: hidden; font-family: sans-serif; }
-    #ui {
-      position: absolute; top: 10px; left: 10px; z-index: 10;
-      background: rgba(0,0,0,0.6); color: white; padding: 15px; border-radius: 12px;
+    body { margin:0; overflow:hidden; }
+    #overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 10; padding: 20px; box-sizing: border-box;
+      font-family: Arial, sans-serif; color: white;
     }
-    button, select { margin: 5px; padding: 10px; font-size: 16px; width: 100%; }
-    #info { margin-top: 15px; font-size: 20px; line-height: 1.5; }
+    button, select { pointer-events: auto; padding: 15px; font-size: 18px; margin: 10px 0; width: 100%; }
+    #info { background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px; margin-top: 20px; }
   </style>
 </head>
 <body>
-  <div id="ui">
-    <button id="startAR">Запустить AR</button>
-    <select id="modelSelect">
-      <option value="low">Low-poly</option>
-      <option value="mid">Mid-poly</option>
-      <option value="high">High-poly</option>
-    </select>
-    <div id="info">FPS: —<br>Полигонов: —</div>
-  </div>
 
-  <!-- Подключаем наш отдельный файл -->
-  <script type="module" src="./app.js"></script>
+<div id="overlay">
+  <button id="start">ЗАПУСТИТЬ WEBAR</button>
+  <select id="modelSelect">
+    <option value="low">Low-poly</option>
+    <option value="mid">Mid-poly</option>
+    <option value="high">High-poly</option>
+  </select>
+  <div id="info">FPS: —<br>Полигонов: —</div>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js';
+import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/webxr/ARButton.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/GLTFLoader.js';
+
+let renderer, scene, camera, model;
+let currentModel = 'low';
+let controller;
+
+const info = document.getElementById('info');
+const startButton = document.getElementById('start');
+
+document.getElementById('modelSelect').addEventListener('change', e => {
+  currentModel = e.target.value;
+  loadModel();
+});
+
+startButton.addEventListener('click', () => {
+  startButton.style.display = 'none';
+  initAR();
+});
+
+function initAR() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  // ← ЭТО САМАЯ ВАЖНАЯ СТРОКА 2025 ГОДА
+  const button = ARButton.createButton(renderer, {
+    requiredFeatures: ['hit-test'],
+    optionalFeatures: ['dom-overlay', 'light-estimation'],
+    domOverlay: { root: document.getElementById('overlay') }
+  });
+  document.body.appendChild(button);
+
+  const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.5);
+  scene.add(light);
+
+  loadModel();
+  renderer.setAnimationLoop(render);
+}
+
+function loadModel() {
+  if (model) scene.remove(model);
+  new GLTFLoader().load(`models/${currentModel}.glb`, gltf => {
+    model = gltf.scene;
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3()).length();
+    model.scale.setScalar(1.5 / size);
+    model.position.set(0, -0.5, -1.5);
+    scene.add(model);
+
+    let polys = 0;
+    model.traverse(obj => { if (obj.isMesh) polys += obj.geometry.index ? obj.geometry.index.count/3 : obj.geometry.attributes.position.count/3; });
+    info.innerHTML = `FPS: —<br>Полигонов: ${Math.round(polys)}`;
+  });
+}
+
+let lastTime = 0;
+function render(time) {
+  if (!lastTime) lastTime = time;
+  const delta = (time - lastTime) / 1000;
+  lastTime = time;
+  const fps = delta > 0 ? Math.round(1 / delta) : 0;
+  info.innerHTML = info.innerHTML.replace(/FPS: \d+/, `FPS: ${fps}`);
+
+  renderer.render(scene, camera);
+}
+</script>
 </body>
 </html>
