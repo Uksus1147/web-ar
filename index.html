@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <title>WebAR FPS Test - Фикс чёрного экрана Chrome 2025</title>
+    <title>WebAR FPS Test - Фикс "ничего не происходит" 2025</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
     <style>
@@ -13,22 +13,22 @@
         }
         button, select { width: 100%; padding: 10px; margin: 5px 0; font-size: 16px; }
         #info { margin-top: 10px; font-size: 18px; }
-        #instructions { font-size: 14px; margin-top: 10px; }
-        #debug { font-size: 12px; color: yellow; margin-top: 5px; }
+        #instructions { font-size: 14px; margin-top: 10px; color: #ffff00; }
+        #debug { font-size: 12px; color: #00ff00; margin-top: 5px; }
     </style>
 </head>
 <body>
     <div id="ui">
         <button id="startAR">START AR (нажми для запуска камеры)</button>
-        <button id="fullscreenToggle" style="display:none;">Toggle Fullscreen (убрать чёрный экран)</button>
+        <button id="autoPlace" style="display:none;">Auto Place Model (разместить автоматически)</button>
         <select id="modelSelect">
             <option value="low">Low-poly</option>
             <option value="mid">Mid-poly</option>
             <option value="high">High-poly</option>
         </select>
         <div id="info">FPS: —<br>Полигонов: —</div>
-        <div id="instructions">Тапни по экрану, чтобы разместить модель</div>
-        <div id="debug">Видео-feed: —</div>
+        <div id="instructions">Наведи камеру на ровную поверхность (стол/пол). Тапни на зелёный кружок для размещения модели.</div>
+        <div id="debug">Hit-test: —<br>Видео-feed: —</div>
     </div>
 
     <script type="importmap">
@@ -48,6 +48,7 @@
         let container;
         let camera, scene, renderer;
         let model = null;
+        let placedModel = null; // Размещённая модель
         let currentModelName = 'low';
         let reticle;
         let hitTestSource = null;
@@ -58,7 +59,8 @@
         const modelPolyCount = { low: 0, mid: 0, high: 0 };
         const info = document.getElementById('info');
         const debug = document.getElementById('debug');
-        const fullscreenToggle = document.getElementById('fullscreenToggle');
+        const instructions = document.getElementById('instructions');
+        const autoPlace = document.getElementById('autoPlace');
 
         init();
         animate();
@@ -70,23 +72,20 @@
 
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-            // **ФИКС 4: Вернули alpha: true + outputContext для видео-overlay + bufferScale 1.0**
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, outputContext: 'webxr' });
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.xr.enabled = true;
-            renderer.xr.setReferenceSpaceType('local');  // Фикс для Android viewport
             container.appendChild(renderer.domElement);
 
             // Свет
             const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.5);
             scene.add(light);
 
-            // Reticle
-            reticle = new THREE.Mesh(
-                new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
-                new THREE.MeshBasicMaterial()
-            );
+            // Reticle (зелёный кружок для hit-test)
+            const reticleGeometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
+            const reticleMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+            reticle = new THREE.Mesh(reticleGeometry, reticleMaterial);
             reticle.matrixAutoUpdate = false;
             reticle.visible = false;
             scene.add(reticle);
@@ -96,26 +95,18 @@
             controller.addEventListener('select', onSelect);
             scene.add(controller);
 
-            // **ФИКС 5: Добавили sessionMode: 'immersive-ar' + domOverlay root**
+            // ARButton с улучшенным hit-test
             const arButton = ARButton.createButton(renderer, {
                 requiredFeatures: ['hit-test', 'camera-access', 'local'],
                 optionalFeatures: ['dom-overlay', 'dom-overlay-for-handheld-ar', 'light-estimation'],
-                sessionMode: 'immersive-ar'  // Принудительно immersive для видео-feed
+                sessionMode: 'immersive-ar'
             });
-            arButton.onclick = () => {  // Хук на запуск сессии
-                document.getElementById('startAR').style.display = 'none';
-                fullscreenToggle.style.display = 'block';
-            };
+            document.getElementById('startAR').style.display = 'none';
             container.appendChild(arButton);
 
-            // **ФИКС 6: Toggle Fullscreen для очистки чёрного экрана (Android navigation bug)**
-            fullscreenToggle.addEventListener('click', async () => {
-                if (document.fullscreenElement) {
-                    await document.exitFullscreen();
-                } else {
-                    await container.requestFullscreen({ navigationUI: 'hide' });  // Скрыть навигацию
-                }
-                if (xrSession) await xrSession.updateRenderState({ depthNear: 0.01, depthFar: 100 });
+            // Auto-place кнопка
+            autoPlace.addEventListener('click', () => {
+                if (model) placeModelAutomatically();
             });
 
             // Смена модели
@@ -131,7 +122,6 @@
 
         function loadModel() {
             if (model) scene.remove(model);
-
             const loader = new GLTFLoader();
             loader.load(`models/${currentModelName}.glb`, (gltf) => {
                 model = gltf.scene;
@@ -155,10 +145,25 @@
                 modelPolyCount[currentModelName] = Math.round(polyCount);
 
                 updateInfo();
+                if (placedModel) {
+                    scene.remove(placedModel); // Удалить старую, если есть
+                    placedModel = null;
+                }
             }, undefined, (error) => {
                 console.error('Ошибка загрузки модели:', error);
                 info.innerHTML = 'Ошибка: модель не загрузилась.';
             });
+        }
+
+        function placeModelAutomatically() {
+            if (model && !placedModel) {
+                placedModel = model.clone();
+                placedModel.position.set(0, 0, -1.5); // Перед камерой
+                placedModel.scale.setScalar(1);
+                scene.add(placedModel);
+                instructions.innerHTML = 'Модель размещена автоматически! Двигай телефон.';
+                autoPlace.style.display = 'none';
+            }
         }
 
         function onWindowResize() {
@@ -168,11 +173,13 @@
         }
 
         function onSelect() {
-            if (reticle.visible && model) {
-                const clone = model.clone();
-                clone.position.setFromMatrixPosition(reticle.matrix);
-                clone.scale.setScalar(1);
-                scene.add(clone);
+            if (reticle.visible && model && !placedModel) {
+                placedModel = model.clone();
+                placedModel.position.setFromMatrixPosition(reticle.matrix);
+                placedModel.scale.setScalar(1);
+                scene.add(placedModel);
+                instructions.innerHTML = 'Модель размещена! Двигай телефон.';
+                autoPlace.style.display = 'none';
             }
         }
 
@@ -194,18 +201,41 @@
 
             xrSession = renderer.xr.getSession();
             if (xrSession && xrSession.isPresenting) {
-                // Debug видео-feed
                 const inputSources = xrSession.inputSources;
-                debug.innerHTML = inputSources.length > 0 ? 'Видео-feed: Активно (комната видна)' : 'Видео-feed: Нет — включи флаги или Samsung Internet';
+                const videoActive = inputSources.length > 0;
+                debug.innerHTML = `Видео-feed: ${videoActive ? 'Активно' : 'Нет доступа'}<br>Hit-test: ${hitTestSource ? 'Готов (ищи поверхность)' : 'Инициализация...'}`;
 
-                // Hit-test
+                if (!videoActive) {
+                    instructions.innerHTML = 'Нет доступа к камере — разреши заново.';
+                    return;
+                }
+
+                // Улучшенный hit-test с fallback на 'local'
                 const frame = xrSession.frame;
                 if (hitTestSourceRequested === false) {
-                    xrSession.requestReferenceSpaceType('viewer').then(referenceSpace => {
-                        xrSession.requestHitTestSource({ space: referenceSpace }).then(source => {
-                            hitTestSource = source;
+                    // Попробуй 'local' сначала, fallback на 'viewer'
+                    xrSession.requestReferenceSpaceType('local').then((referenceSpace) => {
+                        if (referenceSpace) {
+                            xrSession.requestHitTestSource({ space: referenceSpace }).then(source => {
+                                hitTestSource = source;
+                            }).catch(() => {
+                                // Fallback на 'viewer'
+                                xrSession.requestReferenceSpaceType('viewer').then(viewerSpace => {
+                                    xrSession.requestHitTestSource({ space: viewerSpace }).then(source => {
+                                        hitTestSource = source;
+                                    });
+                                });
+                            });
+                        }
+                    }).catch(() => {
+                        // Если 'local' не поддерживается, используй 'viewer'
+                        xrSession.requestReferenceSpaceType('viewer').then(referenceSpace => {
+                            xrSession.requestHitTestSource({ space: referenceSpace }).then(source => {
+                                hitTestSource = source;
+                            });
                         });
                     });
+
                     xrSession.addEventListener('end', () => {
                         hitTestSourceRequested = false;
                         hitTestSource = null;
@@ -213,16 +243,18 @@
                     hitTestSourceRequested = true;
                 }
 
-                if (frame) {
+                if (frame && hitTestSource) {
                     const referenceSpace = renderer.xr.getReferenceSpace();
                     const hitTestResults = frame.getHitTestResults(hitTestSource);
-                    if (hitTestResults.length) {
+                    if (hitTestResults.length > 0) {
                         const hit = hitTestResults[0];
                         const pose = hit.getPose(referenceSpace);
                         reticle.visible = true;
                         reticle.matrix.fromArray(pose.transform.matrix);
+                        instructions.innerHTML = 'Ретикль виден! Тапни для размещения.';
                     } else {
                         reticle.visible = false;
+                        if (!placedModel) instructions.innerHTML = 'Ищи ровную поверхность (стол/пол) с хорошим светом.';
                     }
                 }
             }
